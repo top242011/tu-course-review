@@ -2,6 +2,7 @@
 
 import { useState, useEffect, FormEvent, ChangeEvent } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import Cookies from 'js-cookie';
 
 // ** IMPORTANT: Replace with your Google API Key for Perspective API **
 const GOOGLE_API_KEY = 'AIzaSyCI0__q0lCKHv4E1Dly8Y_Exa4Lyz_BFmQ';
@@ -27,17 +28,49 @@ type Course = {
   avgRating?: string | number;
 };
 
+type ReviewVote = {
+  id: number;
+  review_id: number;
+  user_id: string;
+  vote_type: 'helpful' | 'report';
+};
+
+// Custom Hook to manage user ID using cookies
+function useUserCookie() {
+  const [userId, setUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let userCookie = Cookies.get('user_id');
+    if (!userCookie) {
+      userCookie = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      Cookies.set('user_id', userCookie, { expires: 365 });
+    }
+    setUserId(userCookie);
+  }, []);
+
+  return userId;
+}
+
 export default function HomePage() {
+  const userId = useUserCookie();
   const [view, setView] = useState('home');
   const [courses, setCourses] = useState<Course[]>([]);
   const [currentCourse, setCurrentCourse] = useState<Course | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<Course[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [userVotes, setUserVotes] = useState<ReviewVote[]>([]);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [isAddCourseModalOpen, setIsAddCourseModalOpen] = useState(false);
 
   useEffect(() => {
     fetchCourses();
-  }, []);
+    if (userId) {
+      fetchUserVotes(userId);
+    }
+  }, [userId]);
 
   async function fetchCourses() {
     setLoading(true);
@@ -54,11 +87,43 @@ export default function HomePage() {
     }
   }
 
-  const handleSearch = () => {
+  async function fetchUserVotes(user_id: string) {
+    try {
+      const { data, error } = await supabase.from('review_votes').select('*').eq('user_id', user_id);
+      if (error) throw error;
+      setUserVotes(data as ReviewVote[]);
+    } catch (err) {
+      console.error('Error fetching user votes:', err);
+    }
+  }
+
+  async function searchCourses(query: string) {
+    if (!query) return [];
+    setSearchLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('courses')
+        .select('*, reviews(*)')
+        .ilike('name', `%${query}%`)
+        .or(`code.ilike.%${query}%,professor.ilike.%${query}%`);
+      if (error) throw error;
+      return data;
+    } catch (err) {
+      console.error('Error searching courses:', err);
+      return [];
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
+  const handleSearch = async () => {
     setView('search');
+    const results = await searchCourses(searchTerm);
+    setSearchResults(results as Course[]);
   };
 
-  const handleShowCourseProfile = (courseId: number) => {
+  const handleShowCourseProfile = async (courseId: number) => {
+    await fetchCourses(); 
     const selectedCourse = courses.find(c => c.id === courseId);
     if (selectedCourse) {
       setCurrentCourse(selectedCourse);
@@ -81,6 +146,7 @@ export default function HomePage() {
       alert('เพิ่มวิชาใหม่เรียบร้อยแล้ว!');
       (e.target as HTMLFormElement).reset();
       await fetchCourses();
+      setIsAddCourseModalOpen(false);
       setView('home');
     } catch (err) {
       console.error('Error adding new course:', err);
@@ -109,6 +175,7 @@ export default function HomePage() {
       }]);
       if (error) throw error;
       alert('ส่งรีวิวเรียบร้อยแล้ว!');
+      setIsReviewModalOpen(false);
       await fetchCourses();
       handleShowCourseProfile(currentCourse.id);
     } catch (err) {
@@ -137,29 +204,32 @@ export default function HomePage() {
     }
   };
 
-  const incrementHelpfulVotes = async (reviewId: number) => {
-    try {
-      const { error } = await supabase.rpc('increment_helpful_votes', { review_id_param: reviewId });
-      if (error) throw error;
-      alert('ขอบคุณสำหรับโหวต!');
-      await fetchCourses();
-      if (currentCourse) handleShowCourseProfile(currentCourse.id);
-    } catch (err) {
-      console.error('Error incrementing helpful votes:', err);
-      alert('เกิดข้อผิดพลาดในการโหวต');
+  const handleVote = async (reviewId: number, voteType: 'helpful' | 'report') => {
+    if (!userId) {
+      alert('ไม่สามารถโหวตได้ โปรดลองอีกครั้ง');
+      return;
     }
-  };
 
-  const incrementReportedTimes = async (reviewId: number) => {
+    const existingVote = userVotes.find(v => v.review_id === reviewId && v.user_id === userId);
+
     try {
-      const { error } = await supabase.rpc('increment_reported_times', { review_id_param: reviewId });
-      if (error) throw error;
-      alert('รับทราบการรายงานแล้ว! หากรีวิวนี้ถูกรายงานครบ 5 ครั้ง จะถูกซ่อนอัตโนมัติ');
+      if (existingVote) {
+        if (existingVote.vote_type === voteType) {
+          await supabase.from('review_votes').delete().eq('id', existingVote.id);
+        } else {
+          await supabase.from('review_votes').update({ vote_type: voteType }).eq('id', existingVote.id);
+        }
+      } else {
+        await supabase.from('review_votes').insert([{ review_id: reviewId, user_id: userId, vote_type: voteType }]);
+      }
+
       await fetchCourses();
+      await fetchUserVotes(userId);
       if (currentCourse) handleShowCourseProfile(currentCourse.id);
+      
     } catch (err) {
-      console.error('Error reporting review:', err);
-      alert('เกิดข้อผิดพลาดในการรายงาน');
+      console.error('Error handling vote:', err);
+      alert('เกิดข้อผิดพลาดในการโหวต');
     }
   };
 
@@ -180,7 +250,7 @@ export default function HomePage() {
           <p className="text-lg text-gray-600 mb-8">ฐานข้อมูลรีวิววิชาเรียนที่สร้างโดยนักศึกษาธรรมศาสตร์</p>
           <div className="max-w-xl mx-auto flex items-center bg-white rounded-full shadow-lg p-2">
             <input type="text" id="search-input" className="w-full px-6 py-3 text-gray-700 rounded-full focus:outline-none" placeholder="ค้นหาวิชาจากชื่อ, รหัส, หรืออาจารย์..." value={searchTerm} onChange={(e: ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)} />
-            <button onClick={handleSearch} className="bg-tu-dark-blue-600 text-white rounded-full px-8 py-3 text-sm font-semibold hover:bg-tu-dark-blue-700 transition-colors duration-200">ค้นหา</button>
+            <button onClick={handleSearch} className="px-4 py-2 bg-tu-dark-blue-600 text-black rounded-full hover:bg-tu-dark-blue-700 transition-colors duration-200 shadow-lg">ค้นหา</button>
           </div>
         </section>
         
@@ -227,12 +297,12 @@ export default function HomePage() {
       <>
         <h2 className="text-3xl font-bold text-gray-800 mb-6">ผลการค้นหา</h2>
         <div className="space-y-4">
-          {filteredCourses.length === 0 ? (
+          {searchLoading ? <p className="text-center text-gray-500">กำลังค้นหา...</p> : filteredCourses.length === 0 ? (
             <p className="text-center text-gray-500">ไม่พบผลการค้นหา</p>
           ) : (
             filteredCourses.map(course => (
               <div key={course.id} onClick={() => handleShowCourseProfile(course.id)} className="bg-white rounded-2xl p-6 shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-300 cursor-pointer">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex justify-between items-center mb-2">
                   <h3 className="text-xl font-bold text-gray-800">{course.name}</h3>
                   <span className="bg-yellow-400 text-yellow-800 text-sm font-bold px-3 py-1 rounded-full">{getAvgRating(course.reviews)} / 5</span>
                 </div>
@@ -279,27 +349,33 @@ export default function HomePage() {
         <div className="mt-8">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-2xl font-bold text-gray-800">รีวิววิชา</h3>
-            <button onClick={() => setView('review-modal')} className="bg-tu-light-blue-500 text-white px-6 py-2 rounded-full font-semibold hover:bg-tu-light-blue-600 transition-colors duration-200">เขียนรีวิว</button>
+            <button onClick={() => setIsReviewModalOpen(true)} className="bg-tu-light-blue-500 text-black px-6 py-2 rounded-full font-semibold hover:bg-tu-light-blue-600 transition-colors duration-200">เขียนรีวิว</button>
           </div>
           <div className="space-y-6">
             {reviews.length === 0 ? (
               <p className="text-center text-gray-500">ยังไม่มีรีวิวสำหรับวิชานี้</p>
             ) : (
-              reviews.map(review => (
-                <div key={review.id} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <p className="font-bold text-gray-800">ผู้ใช้ {review.id}</p>
-                      <p className="text-xs text-gray-500">คะแนน: {review.rating} / 5</p>
+              reviews.map(review => {
+                const userVote = userVotes.find(v => v.review_id === review.id && v.user_id === userId);
+                const isHelpful = userVote?.vote_type === 'helpful';
+                const isReport = userVote?.vote_type === 'report';
+
+                return (
+                  <div key={review.id} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <p className="font-bold text-gray-800">ผู้ใช้ {review.id}</p>
+                        <p className="text-xs text-gray-500">คะแนน: {review.rating} / 5</p>
+                      </div>
+                    </div>
+                    <p className="text-gray-700">{review.text}</p>
+                    <div className="flex justify-between items-center mt-4">
+                      <button onClick={() => handleVote(review.id, 'helpful')} className={`text-sm transition-colors duration-200 ${isHelpful ? 'text-blue-700 font-bold' : 'text-blue-500 hover:text-blue-700'}`}>เป็นประโยชน์ ({review.helpful_votes})</button>
+                      <button onClick={() => handleVote(review.id, 'report')} className={`text-sm transition-colors duration-200 ${isReport ? 'text-red-700 font-bold' : 'text-red-500 hover:text-red-700'}`}>รายงาน ({review.reported_times})</button>
                     </div>
                   </div>
-                  <p className="text-gray-700">{review.text}</p>
-                  <div className="flex justify-between items-center mt-4">
-                    <button onClick={() => incrementHelpfulVotes(review.id)} className="text-blue-500 hover:text-blue-700 text-sm">เป็นประโยชน์ ({review.helpful_votes})</button>
-                    <button onClick={() => incrementReportedTimes(review.id)} className="text-red-500 hover:text-red-700 text-sm">รายงาน ({review.reported_times})</button>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -334,17 +410,17 @@ export default function HomePage() {
 
   const renderLoginView = () => (
     <div className="max-w-lg mx-auto bg-white p-8 md:p-12 rounded-2xl shadow-lg">
-      <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">เข้าสู่ระบบ</h2>
+      <h2 className="text-3xl font-bold text-black mb-6 text-center">เข้าสู่ระบบ</h2>
       <p className="text-center text-gray-500 mb-6">ระบบนี้ยังอยู่ในระหว่างการพัฒนา</p>
     </div>
   );
 
   const renderReviewModal = () => (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50">
+    <div className={`fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50 ${isReviewModalOpen ? '' : 'hidden'}`}>
       <div className="bg-white rounded-2xl p-8 w-full max-w-lg shadow-2xl">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-2xl font-bold text-gray-800">เขียนรีวิววิชา</h3>
-          <button onClick={() => setView(currentCourse ? 'course-profile' : 'home')} className="text-gray-500 hover:text-gray-700 transition-colors duration-200">
+          <button onClick={() => setIsReviewModalOpen(false)} className="text-gray-500 hover:text-gray-700 transition-colors duration-200">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
             </svg>
@@ -359,7 +435,41 @@ export default function HomePage() {
             <label htmlFor="review-text" className="block text-gray-700 font-semibold mb-2">รีวิว</label>
             <textarea id="review-text" name="review-text" rows={4} className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required placeholder="เขียนประสบการณ์ของคุณเกี่ยวกับวิชานี้..."></textarea>
           </div>
-          <button type="submit" className="w-full bg-tu-light-blue-500 text-white py-3 rounded-full font-bold text-lg hover:bg-tu-light-blue-600 transition-colors duration-200">ส่งรีวิว</button>
+          <button type="submit" className="w-full px-4 py-2 text-white rounded-full bg-gray-500 hover:bg-gray-600 transition-colors duration-200 shadow-lg">ส่งรีวิว</button>
+        </form>
+      </div>
+    </div>
+  );
+
+  const renderAddCourseModal = () => (
+    <div className={`fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50 ${isAddCourseModalOpen ? '' : 'hidden'}`}>
+      <div className="bg-white rounded-2xl p-8 w-full max-w-lg shadow-2xl">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-2xl font-bold text-gray-800">เพิ่มวิชาใหม่</h3>
+          <button onClick={() => setIsAddCourseModalOpen(false)} className="text-gray-500 hover:text-gray-700 transition-colors duration-200">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+        <form onSubmit={handleAddCourse}>
+          <div className="mb-4">
+            <label htmlFor="course-name" className="block text-gray-700 font-semibold mb-2">ชื่อวิชา</label>
+            <input type="text" id="course-name" name="course-name" className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+          </div>
+          <div className="mb-4">
+            <label htmlFor="course-code" className="block text-gray-700 font-semibold mb-2">รหัสวิชา</label>
+            <input type="text" id="course-code" name="course-code" className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+          </div>
+          <div className="mb-4">
+            <label htmlFor="course-faculty" className="block text-gray-700 font-semibold mb-2">คณะ/วิชาศึกษาทั่วไป</label>
+            <input type="text" id="course-faculty" name="course-faculty" className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div className="mb-6">
+            <label htmlFor="course-professor" className="block text-gray-700 font-semibold mb-2">อาจารย์ผู้สอน</label>
+            <input type="text" id="course-professor" name="course-professor" className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <button type="submit" className="w-full px-4 py-2 text-white rounded-full bg-gray-500 hover:bg-gray-600 transition-colors duration-200 shadow-lg">เพิ่มวิชา</button>
         </form>
       </div>
     </div>
@@ -374,8 +484,8 @@ export default function HomePage() {
           </div>
           <div className="hidden md:flex items-center space-x-6">
             <a href="#" className="text-gray-600 hover:text-tu-light-blue-600 transition-colors duration-200" onClick={() => setView('home')}>หน้าแรก</a>
-            <a href="#" className="px-4 py-2 text-white rounded-full bg-green-500 hover:bg-green-600 transition-colors duration-200 shadow-lg" onClick={() => setView('add-course')}>เพิ่มวิชาใหม่</a>
-            <a href="#" className="px-4 py-2 bg-tu-dark-blue-600 text-white rounded-full hover:bg-tu-dark-blue-700 transition-colors duration-200 shadow-lg" onClick={() => setView('login')}>เข้าสู่ระบบ</a>
+            <a href="#" className="px-4 py-2 text-white rounded-full bg-green-500 hover:bg-green-600 transition-colors duration-200 shadow-lg" onClick={() => setIsAddCourseModalOpen(true)}>เพิ่มวิชาใหม่</a>
+            <a href="#" className="px-4 py-2 bg-tu-dark-blue-600 text-black rounded-full hover:bg-tu-dark-blue-700 transition-colors duration-200 shadow-lg" onClick={() => setView('login')}>เข้าสู่ระบบ</a>
           </div>
         </nav>
       </header>
@@ -386,7 +496,8 @@ export default function HomePage() {
         {view === 'course-profile' && renderCourseProfile()}
         {view === 'add-course' && renderAddCourseView()}
         {view === 'login' && renderLoginView()}
-        {view === 'review-modal' && renderReviewModal()}
+        {isReviewModalOpen && renderReviewModal()}
+        {isAddCourseModalOpen && renderAddCourseModal()}
       </main>
 
       <footer className="bg-gray-800 text-white text-center p-4 mt-8">
