@@ -16,6 +16,7 @@ type Review = {
   helpful_votes: number;
   reported_times: number;
   created_at: string;
+  user_id: string; // เพิ่ม user_id เข้ามา
 };
 
 type Course = {
@@ -59,7 +60,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [_error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [_searchResults, setSearchResults] = useState<Course[]>([]);
+  const [searchResults, setSearchResults] = useState<Course[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [userVotes, setUserVotes] = useState<ReviewVote[]>([]);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
@@ -104,8 +105,7 @@ export default function HomePage() {
       const { data, error } = await supabase
         .from('courses')
         .select('*, reviews(*)')
-        .ilike('name', `%${query}%`)
-        .or(`code.ilike.%${query}%,professor.ilike.%${query}%`);
+        .or(`name.ilike.%${query}%,code.ilike.%${query}%,professor.ilike.%${query}%`);
       if (error) throw error;
       return data;
     } catch (err) {
@@ -167,9 +167,10 @@ export default function HomePage() {
         return;
       }
       
-      if (!currentCourse) return;
+      if (!currentCourse || !userId) return; // เพิ่มเช็ค userId
       const { error } = await supabase.from('reviews').insert([{
         course_id: currentCourse.id,
+        user_id: userId, // เพิ่ม user_id เข้าไป
         rating,
         text
       }]);
@@ -181,6 +182,21 @@ export default function HomePage() {
     } catch (err) {
       console.error('Error submitting review:', err);
       alert('เกิดข้อผิดพลาดในการส่งรีวิว');
+    }
+  };
+
+  const handleDeleteReview = async (reviewId: number) => {
+    if (!confirm('คุณต้องการลบรีวิวนี้ใช่หรือไม่?')) return;
+    
+    try {
+      const { error } = await supabase.from('reviews').delete().eq('id', reviewId);
+      if (error) throw error;
+      alert('ลบรีวิวเรียบร้อยแล้ว!');
+      await fetchCourses();
+      if (currentCourse) handleShowCourseProfile(currentCourse.id);
+    } catch (err) {
+      console.error('Error deleting review:', err);
+      alert('เกิดข้อผิดพลาดในการลบรีวิว');
     }
   };
 
@@ -287,20 +303,14 @@ export default function HomePage() {
   };
 
   const renderSearchResults = () => {
-    const filteredCourses = courses.filter(course =>
-      course.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      course.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (course.professor && course.professor.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
-
     return (
       <>
         <h2 className="text-3xl font-bold text-gray-800 mb-6">ผลการค้นหา</h2>
         <div className="space-y-4">
-          {searchLoading ? <p className="text-center text-gray-500">กำลังค้นหา...</p> : filteredCourses.length === 0 ? (
+          {searchLoading ? <p className="text-center text-gray-500">กำลังค้นหา...</p> : searchResults.length === 0 ? (
             <p className="text-center text-gray-500">ไม่พบผลการค้นหา</p>
           ) : (
-            filteredCourses.map(course => (
+            searchResults.map(course => (
               <div key={course.id} onClick={() => handleShowCourseProfile(course.id)} className="bg-white rounded-2xl p-6 shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition-all duration-300 cursor-pointer">
                 <div className="flex justify-between items-center mb-2">
                   <h3 className="text-xl font-bold text-gray-800">{course.name}</h3>
@@ -359,19 +369,28 @@ export default function HomePage() {
                 const userVote = userVotes.find(v => v.review_id === review.id && v.user_id === userId);
                 const isHelpful = userVote?.vote_type === 'helpful';
                 const isReport = userVote?.vote_type === 'report';
+                const isMyReview = review.user_id === userId;
 
                 return (
                   <div key={review.id} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
                     <div className="flex justify-between items-start mb-2">
                       <div>
-                        <p className="font-bold text-gray-800">ผู้ใช้ {review.id}</p>
+                        <p className="font-bold text-gray-800">
+                          ผู้ใช้ {review.id} {isMyReview && <span className="text-xs text-tu-dark-blue-600 ml-2">(เขียนโดยคุณ)</span>}
+                        </p>
                         <p className="text-xs text-gray-500">คะแนน: {review.rating} / 5</p>
                       </div>
                     </div>
                     <p className="text-gray-700">{review.text}</p>
                     <div className="flex justify-between items-center mt-4">
-                      <button onClick={() => handleVote(review.id, 'helpful')} className={`text-sm transition-colors duration-200 ${isHelpful ? 'text-blue-700 font-bold' : 'text-blue-500 hover:text-blue-700'}`}>เป็นประโยชน์ ({review.helpful_votes})</button>
-                      <button onClick={() => handleVote(review.id, 'report')} className={`text-sm transition-colors duration-200 ${isReport ? 'text-red-700 font-bold' : 'text-red-500 hover:text-red-700'}`}>รายงาน ({review.reported_times})</button>
+                      {isMyReview ? (
+                        <button onClick={() => handleDeleteReview(review.id)} className="text-sm transition-colors duration-200 text-red-500 hover:text-red-700">ลบรีวิว</button>
+                      ) : (
+                        <>
+                          <button onClick={() => handleVote(review.id, 'helpful')} className={`text-sm transition-colors duration-200 ${isHelpful ? 'text-blue-700 font-bold' : 'text-blue-500 hover:text-blue-700'}`}>เป็นประโยชน์ ({review.helpful_votes})</button>
+                          <button onClick={() => handleVote(review.id, 'report')} className={`text-sm transition-colors duration-200 ${isReport ? 'text-red-700 font-bold' : 'text-red-500 hover:text-red-700'}`}>รายงาน ({review.reported_times})</button>
+                        </>
+                      )}
                     </div>
                   </div>
                 );
@@ -410,7 +429,7 @@ export default function HomePage() {
 
   const renderLoginView = () => (
     <div className="max-w-lg mx-auto bg-white p-8 md:p-12 rounded-2xl shadow-lg">
-      <h2 className="text-3xl font-bold text-black mb-6 text-center">เข้าสู่ระบบ</h2>
+      <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">เข้าสู่ระบบ</h2>
       <p className="text-center text-gray-500 mb-6">ระบบนี้ยังอยู่ในระหว่างการพัฒนา</p>
     </div>
   );
@@ -435,7 +454,7 @@ export default function HomePage() {
             <label htmlFor="review-text" className="block text-gray-700 font-semibold mb-2">รีวิว</label>
             <textarea id="review-text" name="review-text" rows={4} className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required placeholder="เขียนประสบการณ์ของคุณเกี่ยวกับวิชานี้..."></textarea>
           </div>
-          <button type="submit" className="w-full px-4 py-2 text-white rounded-full bg-gray-500 hover:bg-gray-600 transition-colors duration-200 shadow-lg">ส่งรีวิว</button>
+          <button type="submit" className="w-full bg-tu-light-blue-500 text-black py-3 rounded-full font-bold text-lg hover:bg-tu-light-blue-600 transition-colors duration-200">ส่งรีวิว</button>
         </form>
       </div>
     </div>
@@ -469,7 +488,7 @@ export default function HomePage() {
             <label htmlFor="course-professor" className="block text-gray-700 font-semibold mb-2">อาจารย์ผู้สอน</label>
             <input type="text" id="course-professor" name="course-professor" className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          <button type="submit" className="w-full px-4 py-2 text-white rounded-full bg-gray-500 hover:bg-gray-600 transition-colors duration-200 shadow-lg">เพิ่มวิชา</button>
+          <button type="submit" className="w-full bg-tu-dark-blue-600 text-white py-3 rounded-full font-bold text-lg hover:bg-tu-dark-blue-700 transition-colors duration-200">เพิ่มวิชา</button>
         </form>
       </div>
     </div>
