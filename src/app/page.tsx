@@ -57,9 +57,9 @@ export default function HomePage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [currentCourse, setCurrentCourse] = useState<Course | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [_error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchResults, setSearchResults] = useState<Course[]>([]);
+  const [_searchResults, setSearchResults] = useState<Course[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [userVotes, setUserVotes] = useState<ReviewVote[]>([]);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
@@ -275,7 +275,7 @@ export default function HomePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {loading ? <p className="text-center text-gray-500">กำลังโหลดข้อมูล...</p> : latestReviews.map(review => (
               <div key={review.id} className="bg-white rounded-2xl shadow-lg p-6">
-                <p className="text-gray-600 italic mb-2">"{review.text.substring(0, 60)}..."</p>
+                <p className="text-gray-600 italic mb-2">{`"${review.text.substring(0, 60)}..."`}</p>
                 <p className="text-sm font-semibold text-gray-800">โดย ผู้ใช้ {review.id}</p>
                 <p className="text-xs text-gray-500 mt-1">วิชา: <span className="text-tu-dark-blue-600 font-bold cursor-pointer" onClick={() => handleShowCourseProfile(review.courseId)}>{review.courseName}</span></p>
               </div>
